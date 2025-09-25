@@ -1,0 +1,261 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <math.h>
+#include <time.h>
+
+#define INPUT 16
+#define H1 128
+#define H2 64
+#define H3 32
+#define OUTPUT 2
+#define LEARNING_RATE 0.0005
+#define EPOCHS 5000
+
+double mean_x[INPUT], std_x[INPUT];
+double mean_y[OUTPUT], std_y[OUTPUT];
+
+typedef struct {
+    double W1[INPUT][H1];
+    double b1[H1];
+    double W2[H1][H2];
+    double b2[H2];
+    double W3[H2][H3];
+    double b3[H3];
+    double W4[H3][OUTPUT];
+    double b4[OUTPUT];
+} NN;
+
+double rand_weight(int fan_in) {
+    return ((double)rand() / RAND_MAX - 0.5) * 2.0 / sqrt((double)fan_in);
+}
+
+void normalize_X(double** X, int n_train, int total) {
+    for (int j = 0; j < INPUT; j++) mean_x[j] = 0.0;
+    for (int i = 0; i < n_train; i++)
+        for (int j = 0; j < INPUT; j++)
+            mean_x[j] += X[i][j];
+    for (int j = 0; j < INPUT; j++) mean_x[j] /= n_train;
+
+    for (int j = 0; j < INPUT; j++) std_x[j] = 0.0;
+    for (int i = 0; i < n_train; i++)
+        for (int j = 0; j < INPUT; j++) {
+            double d = X[i][j] - mean_x[j];
+            std_x[j] += d * d;
+        }
+    for (int j = 0; j < INPUT; j++) {
+        std_x[j] = sqrt(std_x[j] / n_train);
+        if (std_x[j] < 1e-12) std_x[j] = 1.0;
+    }
+
+    for (int i = 0; i < total; i++)
+        for (int j = 0; j < INPUT; j++)
+            X[i][j] = (X[i][j] - mean_x[j]) / std_x[j];
+}
+
+void normalize_Y(double** Y, int n_train) {
+    for (int k = 0; k < OUTPUT; k++) {
+        mean_y[k] = 0.0;
+        for (int i = 0; i < n_train; i++)
+            mean_y[k] += Y[i][k];
+        mean_y[k] /= n_train;
+
+        std_y[k] = 0.0;
+        for (int i = 0; i < n_train; i++) {
+            double d = Y[i][k] - mean_y[k];
+            std_y[k] += d * d;
+        }
+        std_y[k] = sqrt(std_y[k] / n_train);
+        if (std_y[k] < 1e-12) std_y[k] = 1.0;
+    }
+}
+
+void denormalize_Y_sample(double* y_norm, double* y_out) {
+    for (int k = 0; k < OUTPUT; k++)
+        y_out[k] = y_norm[k] * std_y[k] + mean_y[k];
+}
+
+double act(double x) { return tanh(x); }
+double dact(double x) { double t = tanh(x); return 1 - t * t; }
+
+void init_network(NN* nn) {
+    srand(time(NULL));
+    for (int i = 0; i < INPUT; i++)
+        for (int j = 0; j < H1; j++)
+            nn->W1[i][j] = rand_weight(INPUT);
+    for (int j = 0; j < H1; j++) nn->b1[j] = 0.0;
+
+    for (int i = 0; i < H1; i++)
+        for (int j = 0; j < H2; j++)
+            nn->W2[i][j] = rand_weight(H1);
+    for (int j = 0; j < H2; j++) nn->b2[j] = 0.0;
+
+    for (int i = 0; i < H2; i++)
+        for (int j = 0; j < H3; j++)
+            nn->W3[i][j] = rand_weight(H2);
+    for (int j = 0; j < H3; j++) nn->b3[j] = 0.0;
+
+    for (int i = 0; i < H3; i++)
+        for (int k = 0; k < OUTPUT; k++)
+            nn->W4[i][k] = rand_weight(H3);
+    for (int k = 0; k < OUTPUT; k++) nn->b4[k] = 0.0;
+}
+
+void forward(NN* nn, double* x, double* h1, double* h2, double* h3, double* out) {
+    for (int j = 0; j < H1; j++) {
+        double sum = nn->b1[j];
+        for (int i = 0; i < INPUT; i++)
+            sum += x[i] * nn->W1[i][j];
+        h1[j] = act(sum);
+    }
+    for (int j = 0; j < H2; j++) {
+        double sum = nn->b2[j];
+        for (int i = 0; i < H1; i++)
+            sum += h1[i] * nn->W2[i][j];
+        h2[j] = act(sum);
+    }
+    for (int j = 0; j < H3; j++) {
+        double sum = nn->b3[j];
+        for (int i = 0; i < H2; i++)
+            sum += h2[i] * nn->W3[i][j];
+        h3[j] = act(sum);
+    }
+    for (int k = 0; k < OUTPUT; k++) {
+        double sum = nn->b4[k];
+        for (int j = 0; j < H3; j++)
+            sum += h3[j] * nn->W4[j][k];
+        out[k] = sum;
+    }
+}
+
+void train_step(NN* nn, double* x, double* y_true) {
+    double h1[H1], h2[H2], h3[H3], out[OUTPUT];
+    forward(nn, x, h1, h2, h3, out);
+
+    double y_norm[OUTPUT];
+    for (int k = 0; k < OUTPUT; k++)
+        y_norm[k] = (y_true[k] - mean_y[k]) / std_y[k];
+
+    double delta_out[OUTPUT];
+    for (int k = 0; k < OUTPUT; k++)
+        delta_out[k] = out[k] - y_norm[k];
+
+    double delta_h3[H3];
+    for (int j = 0; j < H3; j++) {
+        double grad = 0.0;
+        for (int k = 0; k < OUTPUT; k++)
+            grad += delta_out[k] * nn->W4[j][k];
+        delta_h3[j] = grad * dact(h3[j]);
+    }
+
+    double delta_h2[H2];
+    for (int j = 0; j < H2; j++) {
+        double grad = 0.0;
+        for (int k = 0; k < H3; k++)
+            grad += delta_h3[k] * nn->W3[j][k];
+        delta_h2[j] = grad * dact(h2[j]);
+    }
+
+    double delta_h1[H1];
+    for (int j = 0; j < H1; j++) {
+        double grad = 0.0;
+        for (int k = 0; k < H2; k++)
+            grad += delta_h2[k] * nn->W2[j][k];
+        delta_h1[j] = grad * dact(h1[j]);
+    }
+
+    for (int j = 0; j < H3; j++)
+        for (int k = 0; k < OUTPUT; k++)
+            nn->W4[j][k] -= LEARNING_RATE * h3[j] * delta_out[k];
+    for (int k = 0; k < OUTPUT; k++)
+        nn->b4[k] -= LEARNING_RATE * delta_out[k];
+
+    for (int i = 0; i < H2; i++)
+        for (int j = 0; j < H3; j++)
+            nn->W3[i][j] -= LEARNING_RATE * h2[i] * delta_h3[j];
+    for (int j = 0; j < H3; j++)
+        nn->b3[j] -= LEARNING_RATE * delta_h3[j];
+
+    for (int i = 0; i < H1; i++)
+        for (int j = 0; j < H2; j++)
+            nn->W2[i][j] -= LEARNING_RATE * h1[i] * delta_h2[j];
+    for (int j = 0; j < H2; j++)
+        nn->b2[j] -= LEARNING_RATE * delta_h2[j];
+
+    for (int i = 0; i < INPUT; i++)
+        for (int j = 0; j < H1; j++)
+            nn->W1[i][j] -= LEARNING_RATE * x[i] * delta_h1[j];
+    for (int j = 0; j < H1; j++)
+        nn->b1[j] -= LEARNING_RATE * delta_h1[j];
+}
+
+void evaluate(NN* nn, double** X, double** Y, int n) {
+    double mse[OUTPUT] = { 0.0 };
+    double h1[H1], h2[H2], h3[H3], out[OUTPUT], y_out_denorm[OUTPUT];
+
+    for (int i = 0; i < n; i++) {
+        forward(nn, X[i], h1, h2, h3, out);
+        denormalize_Y_sample(out, y_out_denorm);
+
+        for (int k = 0; k < OUTPUT; k++) {
+            double diff = y_out_denorm[k] - Y[i][k];
+            mse[k] += diff * diff;
+        }
+    }
+
+    for (int k = 0; k < OUTPUT; k++)
+        mse[k] /= n;
+
+    printf("Test MSE Compressor = %.12e (denormalized)\n", mse[0]);
+    printf("Test MSE Turbine    = %.12e (denormalized)\n", mse[1]);
+}
+
+int main() {
+    FILE* f;
+    if (fopen_s(&f, "maintenance.txt", "r") != 0) {
+        printf("Error: maintenance.txt not found\n");
+        return 1;
+    }
+
+    int total = 11934;
+    double** X = malloc(total * sizeof(double*));
+    double** Y = malloc(total * sizeof(double*));
+    for (int i = 0; i < total; i++) {
+        X[i] = malloc(INPUT * sizeof(double));
+        Y[i] = malloc(OUTPUT * sizeof(double));
+        for (int j = 0; j < INPUT; j++) fscanf_s(f, "%lf", &X[i][j]);
+        for (int k = 0; k < OUTPUT; k++) fscanf_s(f, "%lf", &Y[i][k]);
+    }
+    fclose(f);
+
+    for (int i = total - 1; i > 0; i--) {
+        int j = rand() % (i + 1);
+        double* tmpX = X[i]; X[i] = X[j]; X[j] = tmpX;
+        double* tmpY = Y[i]; Y[i] = Y[j]; Y[j] = tmpY;
+    }
+
+    int n_train = total * 0.5;
+    int n_val = total * 0.25;
+    int n_test = total - n_train - n_val;
+
+    double** X_train = X;
+    double** Y_train = Y;
+    double** X_val = X + n_train;
+    double** Y_val = Y + n_train;
+    double** X_test = X + n_train + n_val;
+    double** Y_test = Y + n_train + n_val;
+
+    normalize_X(X, n_train, total);
+    normalize_Y(Y, n_train);
+
+    NN nn;
+    init_network(&nn);
+    for (int e = 0; e < EPOCHS; e++) {
+        for (int i = 0; i < n_train; i++)
+            train_step(&nn, X_train[i], Y_train[i]);
+        if (e % 500 == 0) printf("Epoch %d/%d\n", e, EPOCHS);
+    }
+
+    evaluate(&nn, X_test, Y_test, n_test);
+
+    return 0;
+}
