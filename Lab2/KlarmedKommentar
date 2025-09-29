@@ -1,0 +1,135 @@
+#include <iostream>       // Inkluderar iostream för standard I/O: std::cout, std::cerr, std::cin.
+#include <fstream>        // Inkluderar fstream för filstreamar: std::ifstream, std::ofstream.
+#include <sstream>        // Inkluderar sstream för stringstreams: std::istringstream (parsa rader).
+#include <vector>         // Inkluderar vector-container.
+#include <string>         // Inkluderar std::string.
+#include <cmath>          // Inkluderar matematikfunktioner som sqrt.
+#include <limits>         // Inkluderar numeric_limits (t.ex. infinity()).
+#include <algorithm>      // Inkluderar std::random_shuffle, std::reverse med mera.
+#include <iomanip>        // Inkluderar manipulators för I/O: std::fixed, std::setprecision.
+#include <unordered_map>  // Inkluderar hash-map: std::unordered_map.
+#include <ctime>          // Inkluderar time(0) för att skapa slump-seed.
+
+using namespace std;      // Gör så vi slipper skriva std:: framför allt i std-biblioteket.
+
+struct City {
+    int id;               // Stadens ID (t.ex. 1..52 i berlin52).
+    double x, y;          // Stadens koordinater (x och y).
+};
+
+// Avstånd mellan två städer
+double distanceBetween(const City& a, const City& b) {
+    double dx = a.x - b.x;                    // skillnad i x-koordinater
+    double dy = a.y - b.y;                    // skillnad i y-koordinater
+    return sqrt(dx * dx + dy * dy);           // Pythagoras: euklidiskt avstånd
+}
+
+// Total längd av en rutt
+double routeDistance(const vector<int>& route,               // route: lista av stad-ID i besöksordning
+                     const vector<City>& cities,             // cities: vektor med City-objekt
+                     const unordered_map<int, int>& idToIndex) { // idToIndex: karta id -> index i cities
+    double dist = 0.0;                          // accumulator för total distans
+    for (size_t i = 1; i < route.size(); ++i) { // looper över varje par av på varandra följande städer
+        dist += distanceBetween(cities[idToIndex.at(route[i - 1])], // hitta City för föregående stad och nuvarande stad
+                                cities[idToIndex.at(route[i])]);
+    }
+    return dist;                                // returnera summerad distans
+}
+
+// 2-opt förbättring
+void twoOpt(vector<int>& route,                       // route skickas med referens — ändringar påverkar utanför funktionen
+            const vector<City>& cities,
+            const unordered_map<int, int>& idToIndex) {
+    bool improved = true;                            // flagga för att kontrollera om vi gjorde någon förbättring
+    while (improved) {                               // kör tills ingen förbättring görs
+        improved = false;                            // sätt false, sätt true bara om vi gör en swap som förbättrar
+        for (size_t i = 1; i < route.size() - 2; ++i) {      // första kandidat-start (börjar på 1 för att inte röra start-staden)
+            for (size_t k = i + 1; k < route.size() - 1; ++k) { // andra kandidat-position
+                int a = route[i - 1], b = route[i];  // a-b är första kant (IDs)
+                int c = route[k], d = route[k + 1];  // c-d är andra kant (IDs)
+
+                // beräkna total längd före bytet (två kantlängder)
+                double before = distanceBetween(cities[idToIndex.at(a)], cities[idToIndex.at(b)]) +
+                                distanceBetween(cities[idToIndex.at(c)], cities[idToIndex.at(d)]);
+                // beräkna total längd efter att vi korsat ihop dem (ny parning)
+                double after = distanceBetween(cities[idToIndex.at(a)], cities[idToIndex.at(c)]) +
+                               distanceBetween(cities[idToIndex.at(b)], cities[idToIndex.at(d)]);
+
+                if (after < before) {                 // om efter är kortare — gör bytet (förbättring)
+                    reverse(route.begin() + i, route.begin() + k + 1); // vänd delsegmentet [i..k]
+                    improved = true;                // markera att vi förbättrade så while-loopen fortsätter
+                }
+            }
+        }
+    }
+}
+
+int main() {
+    srand(static_cast<unsigned>(time(0)));          // seedar rand() med nuvarande tid (för slumpning i random_shuffle)
+
+    ifstream in("berlin52.tsp");                    // öppnar filen "berlin52.tsp" för läsning
+    if (!in) {                                      // om filen inte öppnades korrekt
+        cerr << "Kunde inte oppna filen \"berlin52.tsp\".\n"; // skriv felmeddelande till standard error
+        return 1;                                   // avsluta programmet med fel-kod 1
+    }
+
+    string line;                                    // temporär sträng för att läsa rader
+    while (getline(in, line)) {                     // läs rad för rad tills vi hittar markeringsraden
+        if (line.find("NODE_COORD_SECTION") != string::npos) break; // om raden innehåller "NODE_COORD_SECTION" bryt
+    }
+
+    vector<City> cities;                            // vektor som kommer innehålla alla städer
+    while (getline(in, line)) {                     // fortsätt läsa rader (nu efter NODE_COORD_SECTION)
+        if (line.find("EOF") != string::npos) break; // om vi når EOF-delen i filen, bryt
+        if (line.empty()) continue;                 // hoppa över tomma rader
+        istringstream iss(line);                    // skapa en ström över raden för enkel parsing
+        City c;                                     // temporärt City-objekt
+        if (iss >> c.id >> c.x >> c.y) cities.push_back(c); // försök läsa "id x y", om lyckas lägg till i cities
+    }
+
+    unordered_map<int, int> idToIndex;              // karta från stadens ID till index i vector cities
+    for (size_t i = 0; i < cities.size(); ++i) {    // för alla index i cities
+        idToIndex[cities[i].id] = static_cast<int>(i); // spara id -> i (cast till int)
+    }
+
+    int startID = 1;                                // vi väljer att alltid börja (och sluta) i stad med ID 1
+    vector<int> bestRoute;                          // kommer spara bästa hittills funna rutt (lista av stad-ID)
+    double bestDistance = numeric_limits<double>::infinity(); // initiera bästa distans till "oändligt" så första lösningen slår den
+
+    int populationSize = 100;    // antal slumpade rutter som testas varje "generation"
+    int generations = 200;       // antal generationer vi kör (loop-iterationer)
+
+    for (int g = 0; g < generations; ++g) {         // yttre loop: generation för generation
+        for (int i = 0; i < populationSize; ++i) {  // inre loop: skapa och utvärdera populationSize rutter
+            // bygg rutt
+            vector<int> route;                      // temporär rutt (lista av ids)
+            route.push_back(startID);               // lägg till start-staden först
+            for (size_t j = 1; j <= cities.size(); ++j) { // anta att stad-ID motsvarar 1..N och lägg in alla andra städer
+                if ((int)j != startID) route.push_back(j); // om j inte är startID så läggs den till
+            }
+            random_shuffle(route.begin() + 1, route.end()); // slumpa ordningen på alla städer utom position 0 (starten)
+            route.push_back(startID);             // lägg till start-staden sist så att rutten blir cyklisk (återvänd till start)
+
+            // förbättra med 2-opt
+            twoOpt(route, cities, idToIndex);     // kör 2-opt lokalt förbättring på denna rutt
+
+            double dist = routeDistance(route, cities, idToIndex); // beräkna total distans för denna rutt
+            if (dist < bestDistance) {            // om denna rutt är bättre än bästa hittills
+                bestDistance = dist;              // uppdatera bästa distans
+                bestRoute = route;                // spara bästa rutt
+            }
+        }
+        cout << "Generation " << g + 1              // skriv ut vilken generation vi är på
+             << " basta hittills: " << bestDistance << "\n"; // och skriv bästa distans hittills
+        if (bestDistance <= 7544.37) break;       // om vi når eller överskrider denna gräns, avbryt tidigare (7544.37 är känt bästa för berlin52)
+    }
+
+    cout << fixed << setprecision(3);              // sätt cout för att visa flyttal med 3 decimaler i fixed-format
+    cout << "\nBasta rutt: ";                      // skriv rubrik för rutten
+    for (int id : bestRoute) cout << id << " ";    // skriv ut varje stad-ID i bästa rutt följt av ett mellanslag
+    cout << "\nTotal distans: " << bestDistance << "\n"; // skriv totaldistansen
+    if (bestDistance <= 8000.0)                    // jämför mot din constraint 8000
+        cout << "Rutten inom constraint (<= 8000).\n";
+    else
+        cout << "Rutten ej inom constraint (> 8000).\n";
+} // slut på main (C++ returnerar implicit 0 från main om inget annat anges)
